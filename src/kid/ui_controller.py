@@ -1,27 +1,15 @@
-"""K.I.D local UI controller for model and runtime status."""
+"""K.I.D local UI controller and runtime status panel."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
-from PySide6.QtWidgets import (
-    QComboBox,
-    QLabel,
-    QLineEdit,
-    QMainWindow,
-    QPushButton,
-    QTextEdit,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import QComboBox, QLabel, QLineEdit, QMainWindow, QPushButton, QTextEdit, QVBoxLayout, QWidget
 
 from kid.config import Settings
-from kid.diagnostics import collect_debug_report
 from kid.hardware import inspect_hardware, model_warning
 from kid.ollama import OllamaClient
-from kid.runtime import RuntimeManager
 
 
 @dataclass
@@ -51,9 +39,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.settings = Settings.from_env()
         self.client = OllamaClient(self.settings)
-        self.runtime = RuntimeManager(self.settings)
         self.hardware = inspect_hardware(self.settings.data_dir)
-        self._history: list[dict[str, str]] = []
+        self.history: list[dict[str, str]] = []
 
         self.setWindowTitle("K.I.D — Local Intelligence")
         self.resize(960, 740)
@@ -112,14 +99,17 @@ class MainWindow(QMainWindow):
 
     def _apply_mode(self, mode: str) -> None:
         if mode == "Lightweight":
-            if self.settings.lightweight_model in [self.model_box.itemText(i) for i in range(self.model_box.count())]:
-                self.model_box.setCurrentText(self.settings.lightweight_model)
-        elif self.settings.primary_model in [self.model_box.itemText(i) for i in range(self.model_box.count())]:
-            self.model_box.setCurrentText(self.settings.primary_model)
+            preferred = self.settings.lightweight_model
+        else:
+            preferred = self.settings.primary_model
+        if preferred in [self.model_box.itemText(i) for i in range(self.model_box.count())]:
+            self.model_box.setCurrentText(preferred)
         self._update_warning()
 
     def _update_warning(self, *_args) -> None:
         selected = self.model_box.currentText()
+        if not selected:
+            return
         warning = model_warning(
             selected,
             self.hardware.available_ram_gib,
@@ -155,7 +145,7 @@ class MainWindow(QMainWindow):
 
         self.status_label.setText(
             f"Ollama connected at {self.settings.ollama_url} · "
-            f"Installed: {', '.join(items) or 'none'} · Loaded: {', '.join(status.loaded_models) or 'none'}"
+            f"Installed: {', '.join(items) or 'none'}"
         )
         self._update_warning()
 
@@ -173,7 +163,7 @@ class MainWindow(QMainWindow):
         self.send_button.setEnabled(False)
         self.status_label.setText(f"Sending to local model {model}…")
 
-        task = _Task(lambda: self.client.generate(model, prompt, self._history))
+        task = _Task(lambda: self.client.generate(model, prompt, self.history))
         task.completed.connect(lambda result: self._show_reply(prompt, model, result))
         task.start()
 
@@ -186,7 +176,7 @@ class MainWindow(QMainWindow):
             return
 
         self.transcript.append(f"<b>K.I.D ({model}):</b> {value}")
-        self._history.extend([
+        self.history.extend([
             {"role": "user", "content": prompt},
             {"role": "assistant", "content": value},
         ])
