@@ -1,72 +1,56 @@
-from __future__ import annotations
+# KID-AI
 
-from kid.core.errors import ProviderError
-from kid.core.models import GenerationOptions, Message, ProviderResponse
+Key Intelligence Driver (K.I.D) is a local-only AI desktop assistant intended for Linux Mint. It is designed to stay fully offline after setup and to use local inference through Ollama rather than cloud services.
 
+## Current local configuration
 
-class OpenAIProvider:
-    """OpenAI adapter."""
+This repository now includes a hardware-aware local foundation with the following defaults for the development machine described by the project:
 
-    def __init__(
-        self,
-        *,
-        api_key: str | None,
-        model: str = "gpt-4o-mini",
-        temperature: float = 0.7,
-        max_tokens: int | None = None,
-        base_url: str | None = None,
-    ) -> None:
-        self.api_key = api_key
-        self.model = model
-        self.temperature = temperature
-        self.max_tokens = max_tokens
-        self.base_url = base_url
-        self._client = None
+- Primary model: `llama3.2:3b`
+- Lightweight model: `llama3.2:1b`
+- Vision model: `qwen2.5vl:3b`
+- Experimental model: `llama3:8b`
+- Ollama endpoint: `http://127.0.0.1:11434`
+- No automatic downloads; models must be installed with Ollama separately
+- Local-only checks for Ollama, model availability, memory pressure, and hardware status
 
-        try:
-            from openai import AsyncOpenAI
-        except ImportError:  # pragma: no cover - import guard
-            self._client = None
-            return
+## Local features
 
-        self._client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
+- Hardware and resource inspection
+- Local loopback-only Ollama client
+- Desktop UI status panel with model and memory warnings
+- Memory store using SQLite for preferences, notes, and conversation history
+- Offline Vosk adapter configuration and Piper TTS adapter stubs for local speech
+- File/tool execution guardrails with explicit permission checks for local-only operations
 
-    async def generate(
-        self,
-        messages: list[Message],
-        options: GenerationOptions,
-    ) -> ProviderResponse:
-        if self._client is None:
-            raise ProviderError(
-                "OpenAI package is not installed. Install it with `pip install openai`."
-            )
+## Installation
 
-        payload = [
-            {"role": message.role, "content": message.content}
-            for message in messages
-        ]
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e '.[test]'
+```
 
-        try:
-            response = await self._client.chat.completions.create(
-                model=options.model,
-                messages=payload,
-                temperature=options.temperature,
-                max_tokens=options.max_tokens,
-            )
-            text = response.choices[0].message.content or ""
-            usage = getattr(response, "usage", None)
-            usage_dict = None
-            if usage is not None:
-                usage_dict = {
-                    "prompt_tokens": getattr(usage, "prompt_tokens", 0),
-                    "completion_tokens": getattr(usage, "completion_tokens", 0),
-                    "total_tokens": getattr(usage, "total_tokens", 0),
-                }
-            return ProviderResponse(
-                text=text,
-                provider="openai",
-                usage=usage_dict,
-                finish_reason=getattr(response.choices[0], "finish_reason", None),
-            )
-        except Exception as exc:  # pragma: no cover - runtime/network path
-            raise ProviderError(f"OpenAI request failed: {exc}") from exc
+Then start the app:
+
+```bash
+kid
+```
+
+## Environment variables
+
+```bash
+export KID_OLLAMA_URL=http://127.0.0.1:11434
+export KID_MODEL_PRIMARY=llama3.2:3b
+export KID_MODEL_LIGHTWEIGHT=llama3.2:1b
+export KID_MODEL_VISION=qwen2.5vl:3b
+export KID_MODEL_EXPERIMENTAL=llama3:8b
+export KID_VOSK_MODEL_NAME=vosk-model-cn-0.22
+export KID_VOSK_MODEL_PATH="$HOME/.local/share/vosk/vosk-model-cn-0.22"
+export KID_PIPER_VOICE=en_US-lessac-medium
+```
+
+## Notes
+
+The project remains intentionally conservative: users must install Ollama models manually, K.I.D does not download them, and the app avoids cloud provider fallback. Local speech recognition and local speech synthesis are configured as explicit offline components, not cloud alternatives.
