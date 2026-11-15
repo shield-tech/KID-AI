@@ -1,0 +1,43 @@
+from __future__ import annotations
+
+from typing import Sequence
+
+from kid.core.errors import ProviderError
+from kid.core.models import GenerationOptions, Message, ProviderResponse
+
+
+class KIDAssistant:
+    """Assistant orchestration layer that remains provider-agnostic."""
+
+    def __init__(self, provider: object, *, system_prompt: str | None = None):
+        self.provider = provider
+        self.system_prompt = system_prompt
+
+    async def chat(self, prompt: str) -> ProviderResponse:
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("Prompt must be a non-empty string.")
+
+        messages: list[Message] = []
+        if self.system_prompt:
+            messages.append(Message(role="system", content=self.system_prompt))
+        messages.append(Message(role="user", content=prompt.strip()))
+
+        provider_model = getattr(self.provider, "model", "default-model")
+        provider_temperature = getattr(self.provider, "temperature", 0.7)
+        provider_max_tokens = getattr(self.provider, "max_tokens", None)
+
+        options = GenerationOptions(
+            model=provider_model,
+            temperature=provider_temperature,
+            max_tokens=provider_max_tokens,
+        )
+
+        try:
+            response = await self.provider.generate(messages, options)
+        except AttributeError as exc:
+            raise ProviderError("Provider does not implement the required generate() interface.") from exc
+
+        if not isinstance(response, ProviderResponse):
+            raise ProviderError("Provider returned an invalid response object.")
+
+        return response

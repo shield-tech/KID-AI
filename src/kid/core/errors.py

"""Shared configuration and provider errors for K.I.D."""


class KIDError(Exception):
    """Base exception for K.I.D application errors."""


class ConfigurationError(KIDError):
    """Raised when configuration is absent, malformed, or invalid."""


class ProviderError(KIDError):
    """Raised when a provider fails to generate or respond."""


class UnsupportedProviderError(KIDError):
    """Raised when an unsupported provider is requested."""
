@@ -1,0 +1,30 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Literal
+
+
+@dataclass(frozen=True)
+class Message:
+    role: Literal["user", "assistant", "system"]
+    content: str
+
+
+@dataclass(frozen=True)
+class GenerationOptions:
+    model: str
+    temperature: float = 0.7
+    max_tokens: int | None = None
+    extra: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ProviderResponse:
+    text: str
+    provider: str
+    usage: dict[str, int] | None = None
+    finish_reason: str | None = None
+
+    @property
+    def content(self) -> str:
+        return self.text

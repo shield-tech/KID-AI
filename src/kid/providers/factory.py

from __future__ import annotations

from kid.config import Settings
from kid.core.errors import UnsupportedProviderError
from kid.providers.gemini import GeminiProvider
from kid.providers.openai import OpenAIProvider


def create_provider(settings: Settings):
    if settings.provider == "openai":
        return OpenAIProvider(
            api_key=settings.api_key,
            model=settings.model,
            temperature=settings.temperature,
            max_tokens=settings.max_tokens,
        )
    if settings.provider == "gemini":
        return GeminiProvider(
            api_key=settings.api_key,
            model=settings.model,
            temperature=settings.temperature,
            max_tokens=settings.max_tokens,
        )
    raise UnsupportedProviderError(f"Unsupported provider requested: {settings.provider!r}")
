@@ -1,0 +1,18 @@
+from __future__ import annotations
+
+from typing import Protocol, Sequence
+
+from kid.core.models import GenerationOptions, Message, ProviderResponse
+
+
+class AIProvider(Protocol):
+    model: str
+    temperature: float
+    max_tokens: int | None
+
+    async def generate(
+        self,
+        messages: Sequence[Message],
+        options: GenerationOptions,
+    ) -> ProviderResponse:
+        ...
