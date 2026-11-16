@@ -4,10 +4,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
-if [[ ! -d .venv ]]; then
-  printf 'Virtual environment not found. Run ./install.sh first.\n' >&2
+if [[ ! -x .venv/bin/python ]]; then
+  printf 'K.I.D virtual environment missing. Run ./install.sh first.\n' >&2
   exit 1
 fi
 
-source .venv/bin/activate
-python main.py --voice
+if [[ ! -f .env ]]; then
+  printf 'No .env found; using built-in safe defaults. Copy .env.example to .env to configure.\n'
+fi
+
+exec .venv/bin/python main.py "$@"

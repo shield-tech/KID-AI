@@ -8,7 +8,7 @@ from typing import Optional
 
 
 class VoiceOutput:
-    """Local Piper-first TTS. Playback runs in the speech queue's worker thread."""
+    """Local Piper-first TTS. Playback executes on the speech worker, never the asyncio loop."""
 
     def __init__(self, config: Optional[object] = None) -> None:
         self.config = config
@@ -16,6 +16,7 @@ class VoiceOutput:
         self._muted = False
         self._lock = threading.RLock()
         self._voice = str(getattr(config, "piper_voice", "en_US-lessac-medium")) if config else "en_US-lessac-medium"
+        self._voice_dir = Path(getattr(config, "piper_voice_dir", "voices")).expanduser() if config else Path("voices")
         self._fallback_voice = str(getattr(config, "espeak_voice", "en-us")) if config else "en-us"
         self._volume = float(getattr(config, "speech_volume", 1.0)) if config else 1.0
         self._speed = float(getattr(config, "speech_speed", 1.0)) if config else 1.0
@@ -31,7 +32,7 @@ class VoiceOutput:
 
     @property
     def available_engine(self) -> Optional[str]:
-        if shutil.which("piper") and shutil.which("aplay") and self._piper_model().is_file():
+        if shutil.which("piper") and self._piper_model().is_file() and (shutil.which("paplay") or shutil.which("aplay")):
             return "piper"
         if shutil.which("espeak-ng"):
             return "espeak-ng"
@@ -41,9 +42,9 @@ class VoiceOutput:
 
     def _piper_model(self) -> Path:
         voice = Path(self._voice).expanduser()
-        if voice.suffix == ".onnx":
+        if voice.suffix == ".onnx" or voice.is_absolute() or voice.parent != Path("."):
             return voice
-        return Path("voices") / f"{self._voice}.onnx"
+        return self._voice_dir / f"{self._voice}.onnx"
 
     def set_enabled(self, enabled: bool) -> None:
         self._enabled = bool(enabled)
@@ -82,7 +83,7 @@ class VoiceOutput:
                     proc.wait(timeout=0.5)
 
     def speak(self, text: str) -> None:
-        if not text.strip() or not self._enabled or self._muted:
+        if not text.strip() or not self._enabled or self._muted or self._volume <= 0:
             return
         engine = self.available_engine
         if engine is None:
@@ -90,16 +91,17 @@ class VoiceOutput:
         with self._lock:
             try:
                 if engine == "piper":
-                    # Piper emits a WAV stream to stdout; aplay consumes it from stdin.
-                    piper = subprocess.Popen(
-                        ["piper", "--model", str(self._piper_model())],
-                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                    )
+                    command = ["piper", "--model", str(self._piper_model()), "--length_scale", str(1.0 / self._speed)]
+                    piper = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
                     self._process = piper
                     audio, _ = piper.communicate(text.encode("utf-8"), timeout=90)
                     if piper.returncode != 0:
                         raise RuntimeError("Piper synthesis failed")
-                    player = subprocess.Popen(["aplay", "-q"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    if shutil.which("paplay"):
+                        player_command = ["paplay", f"--volume={int(self._volume * 65536)}"]
+                    else:
+                        player_command = ["aplay", "-q"]
+                    player = subprocess.Popen(player_command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     self._process = player
                     player.communicate(audio, timeout=90)
                 else:

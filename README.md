@@ -1,29 +1,28 @@
 # K.I.D
 
-K.I.D (Key Intelligence Driver) is a local-first terminal assistant for SHIELD Smart Robotics Laboratory. It connects directly to local Ollama and does not download models automatically.
+K.I.D (Key Intelligence Driver) is a local-first terminal assistant for SHIELD Smart Robotics Laboratory. It connects directly to local Ollama and does not download models or voice assets automatically.
 
-## Run
+## Install and start
 
-Python 3.11+ is recommended. Run `./install.sh`, then `./start.sh`. Ollama must be installed and running locally. Install a model yourself with your normal Ollama workflow; K.I.D only discovers models available via `/api/tags`.
+Python 3.11+ is recommended. Run `./install.sh`, optionally copy `.env.example` to `.env`, then run `./start.sh`. The launcher uses the project virtual environment directly and forwards CLI arguments. Ollama must already be installed and running locally; choose from models reported by `/models`.
 
-Copy `.env.example` to `.env` to configure the local API, SQLite memory, knowledge folder, context, generation limits, speech options, and task storage. Put TXT, Markdown, PDF, and DOCX documents under `knowledge/`; startup indexes supported files. Run `/index` to refresh after adding files.
+## Local voice setup
+
+Piper is preferred. Install Piper using a trusted local package/source, then place the voice `.onnx` and matching `.onnx.json` in `voices/` (or configure `KID_PIPER_VOICE_DIR`). K.I.D will not fetch large voice files. Piper playback uses `paplay` for configured volume when available, otherwise `aplay`; install `espeak-ng` as fallback. Adjust with `/voice volume 0..1`, `/voice speed 0.5..2`, `/voice name NAME`, `/mute`, and `/unmute`.
+
+For offline input, install the optional Vosk and sounddevice dependencies, download a Vosk model yourself into `models/vosk` or set `VOSK_MODEL_DIR`, and explicitly activate push-to-talk. The application does not continuously record audio. Manual text input remains available.
 
 ## Commands
 
-- `/help`
-- `/models`, `/model`, `/model MODEL_NAME`
-- `/voice on|off|status|volume 0..1|speed 0.5..2|name VOICE`
-- `/mute`, `/unmute`, `/stop`
-- `/clear` clears conversation history but preserves approved memories
-- `/memory [search QUERY|history]`
-- `/remember topic | text` saves only explicit user-entered content
-- `/edit ID topic | text`, `/forget ID`
-- `/index`, `/knowledge [index|search QUERY|status]`, `/vision [status|models]`
+- `/help`, `/status`, `/models`, `/model [NAME]`, `/benchmark`
+- `/voice [on|off|status|volume N|speed N|name NAME]`, `/mute`, `/unmute`, `/stop`
+- `/memory [search QUERY|history]`, `/remember topic | text`, `/edit ID topic | text`, `/forget ID`, `/clear`
+- `/knowledge [status|index|search QUERY]`, `/vision [status|models]`
 - `/tasks [list|add TITLE | NOTES|done ID|remove ID|summary]`
-- `/system [all|cpu|ram|disk|temperature|network|processes|uptime]`, `/robotics`, `/status`, `/benchmark`, `/exit`
+- `/system [all|cpu|ram|swap|disk|temperature|network|processes|uptime|platform]`, `/robotics`, `/exit`
 
-PDF and document retrieval is local and cites source filenames and page references where available. Vision support is reported honestly and only when a local Ollama vision-capable model is actually installed. Robotics mode remains disconnected by default until an explicit, validated hardware protocol is configured.
+`/system` reports local read-only telemetry; unavailable sensor/dependency readings are explicitly labeled. `/robotics` reports simulation/hardware mode, serial port state separately from verified device identity, and whether motion is enabled. Opening a serial port alone is not device verification; no generic movement protocol is implemented, and the software E-stop latch is not a safety-rated physical stop.
 
-## Checks
+## Test
 
-Run tests with `python -m pytest`. Tests use temporary SQLite databases and mocked Ollama streaming, so they do not require a live model, microphone, or audio hardware. Live Ollama performance, voice output, and hardware integration should be tested on the target machine.
+Run `python -m pytest`. Tests use temporary data and mocked components; live Ollama, audio hardware, microphones, and physical robot connectivity must be validated on the target machine.
