@@ -1,0 +1,10 @@
+__pycache__/
+.venv/
+.pytest_cache/
+*.pyc
+*.pyo
+*.egg-info/
+.env
+.kid/
+*.sqlite3
+kid_audit.log

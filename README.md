@@ -1,102 +1,75 @@
-# KID-AI
+# K.I.D
+# Key Intelligence Driver
+# SHIELD Advanced AI System
 
-Key Intelligence Driver (K.I.D) is a Python-first foundation for an extensible AI assistant that supports multiple language model providers, a provider-neutral orchestration layer, and a clean path to tool- and workflow-based autonomy.
+K.I.D is a local-first terminal assistant for SHIELD Smart Robotics Laboratory.
 
-This repository now includes a modular starter implementation with:
+## Overview
 
-- A provider-neutral assistant core
-- OpenAI and Google Gemini adapters
-- Environment-driven configuration and validation
-- Unit tests for assistant behavior and configuration
-- A command-line entry point for quick interaction
+K.I.D connects to the local Ollama API, supports memory, local knowledge retrieval, optional voice output, optional voice input, Linux telemetry, and robotics-safe disconnected mode.
 
-## Project status
+## Quick start
 
-This is an initial, working architecture foundation. It is intentionally small, testable, and extensible. The current release is designed to be safely expanded with tools, memory, telemetry, and future autonomous capabilities without coupling the core assistant to any single provider.
-
-## Python setup
-
-Use Python 3.11 or newer.
+1. Install system dependencies if needed:
+   - Python 3.11+
+   - Ollama
+   - Optional: Piper, espeak-ng, Vosk models, microphone hardware
+2. Create a virtual environment and install Python dependencies:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -e .
+./install.sh
+```
+
+3. Start the assistant:
+
+```bash
+./start.sh
 ```
 
 ## Environment variables
 
-Set the model provider and credentials before running:
+Copy `.env.example` to `.env` and customize:
 
 ```bash
-export KID_PROVIDER=openai
-export OPENAI_API_KEY="your-openai-key"
-export KID_MODEL="gpt-4o-mini"
+cp .env.example .env
 ```
 
-Or use Gemini:
+## Commands
 
-```bash
-export KID_PROVIDER=gemini
-export GEMINI_API_KEY="your-gemini-key"
-export KID_MODEL="gemini-1.5-flash"
-```
+- `/help`
+- `/model`
+- `/models`
+- `/voice on`
+- `/voice off`
+- `/mute`
+- `/unmute`
+- `/stop`
+- `/clear`
+- `/memory`
+- `/remember`
+- `/forget`
+- `/status`
+- `/benchmark`
+- `/exit`
 
-## Run the assistant
+## Notes
 
-```bash
-kid "Summarize the importance of modular AI architecture."
-```
+- The assistant connects to `http://127.0.0.1:11434` by default.
+- It discovers available Ollama models dynamically and changes models without a restart when supported.
+- Memory is stored in SQLite, not in the model's primary prompt.
+- Local documents under `knowledge/` can be searched for context.
+- Robotics support is modular and defaults to simulation/disconnected mode until explicitly authorized.
 
-You can also invoke the module directly:
+## Troubleshooting
 
-```bash
-python -m kid.app "Write a short system prompt for a helpful assistant."
-```
+- If Ollama is unavailable, ensure it is running locally on port 11434.
+- If audio does not work, install Piper or espeak-ng and ensure the selected voice model exists.
+- If Vosk fails, download a model and set the `VOSK_MODEL_DIR` environment variable.
+- If a command is unsafe, K.I.D requires explicit confirmation.
 
-## Development
+## Security
 
-```bash
-python -m pip install -e ".[dev]"
-pytest
-```
-
-## Architecture goals
-
-- Provider-neutral orchestration in `kid.core`
-- Provider-specific adapters isolated in `kid.providers`
-- Strong validation and explicit configuration errors
-- Simple, maintainable interfaces
-- Safe future extension to tools, memory, and workflow control
-
-## Repository structure
-
-```text
-src/kid/
-  app.py
-  config.py
-  core/
-    assistant.py
-    errors.py
-    models.py
-  providers/
-    __init__.py
-    base.py
-    factory.py
-    gemini.py
-    openai.py
-
-docs/
-  ARCHITECTURE.md
-
-tests/
-  unit/
-    test_assistant.py
-    test_config.py
-    test_factory.py
-```
-
-## License
-
-This project is in its early development stage and does not yet define a production license.
+- No secrets are stored in source files.
+- Sensitive operations require confirmation.
+- External network exposure is disabled by default.
+- All local operations remain on the machine.
