@@ -1,69 +1,118 @@
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import threading
+from pathlib import Path
 from typing import Optional
 
 
 class VoiceOutput:
+    """Local Piper-first TTS. Playback runs in the speech queue's worker thread."""
+
     def __init__(self, config: Optional[object] = None) -> None:
         self.config = config
-        self._enabled = True
+        self._enabled = bool(getattr(config, "voice_output_enabled", True)) if config else True
         self._muted = False
-        self._lock = threading.Lock()
-        self._voice = getattr(config, "piper_voice", "default") if config else "default"
-        self._volume = getattr(config, "speech_volume", 1.0) if config else 1.0
-        self._speed = getattr(config, "speech_speed", 1.0) if config else 1.0
+        self._lock = threading.RLock()
+        self._voice = str(getattr(config, "piper_voice", "en_US-lessac-medium")) if config else "en_US-lessac-medium"
+        self._fallback_voice = str(getattr(config, "espeak_voice", "en-us")) if config else "en-us"
+        self._volume = float(getattr(config, "speech_volume", 1.0)) if config else 1.0
+        self._speed = float(getattr(config, "speech_speed", 1.0)) if config else 1.0
+        self._process: Optional[subprocess.Popen[bytes]] = None
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    @property
+    def muted(self) -> bool:
+        return self._muted
+
+    @property
+    def available_engine(self) -> Optional[str]:
+        if shutil.which("piper") and shutil.which("aplay") and self._piper_model().is_file():
+            return "piper"
+        if shutil.which("espeak-ng"):
+            return "espeak-ng"
+        if shutil.which("espeak"):
+            return "espeak"
+        return None
+
+    def _piper_model(self) -> Path:
+        voice = Path(self._voice).expanduser()
+        if voice.suffix == ".onnx":
+            return voice
+        return Path("voices") / f"{self._voice}.onnx"
 
     def set_enabled(self, enabled: bool) -> None:
-        self._enabled = enabled
+        self._enabled = bool(enabled)
+        if not enabled:
+            self.stop()
 
     def set_muted(self, muted: bool) -> None:
-        self._muted = muted
+        self._muted = bool(muted)
+        if muted:
+            self.stop()
 
     def set_voice(self, voice: str) -> None:
-        self._voice = voice
+        if not voice.strip():
+            raise ValueError("Voice name/path cannot be empty")
+        self._voice = voice.strip()
 
     def set_volume(self, volume: float) -> None:
-        self._volume = max(0.0, min(2.0, volume))
+        if not 0 <= float(volume) <= 1:
+            raise ValueError("Volume must be between 0 and 1")
+        self._volume = float(volume)
 
     def set_speed(self, speed: float) -> None:
-        self._speed = max(0.5, min(2.0, speed))
+        if not 0.5 <= float(speed) <= 2.0:
+            raise ValueError("Speed must be between 0.5 and 2.0")
+        self._speed = float(speed)
 
     def stop(self) -> None:
-        for proc_name in ("piper", "espeak-ng", "espeak"):
-            try:
-                subprocess.run(["pkill", "-f", proc_name], check=False)
-            except Exception:
-                pass
+        with self._lock:
+            proc = self._process
+            if proc and proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=0.5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=0.5)
 
     def speak(self, text: str) -> None:
-        if not self._enabled or self._muted or not text.strip():
+        if not text.strip() or not self._enabled or self._muted:
+            return
+        engine = self.available_engine
+        if engine is None:
             return
         with self._lock:
-            if shutil.which("piper"):
-                self._speak_with_piper(text)
-            elif shutil.which("espeak-ng"):
-                self._speak_with_espeak(text)
-            else:
-                print(f"[VOICE] {text}")
-
-    def _speak_with_piper(self, text: str) -> None:
-        try:
-            voice = self._voice
-            cmd = ["piper", "--model", f"{voice}.onnx", "--output-raw", "--voice", voice]
-            subprocess.run(cmd, input=text.encode("utf-8"), check=False)
-        except Exception:
-            self._speak_with_espeak(text)
-
-    def _speak_with_espeak(self, text: str) -> None:
-        try:
-            cmd = ["espeak-ng", "-v", self._voice, "-s", str(int(140 * self._speed)), "-a", str(int(200 * self._volume)), text]
-            subprocess.run(cmd, check=False)
-        except Exception:
-            print(f"[VOICE] {text}")
+            try:
+                if engine == "piper":
+                    # Piper emits a WAV stream to stdout; aplay consumes it from stdin.
+                    piper = subprocess.Popen(
+                        ["piper", "--model", str(self._piper_model())],
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    )
+                    self._process = piper
+                    audio, _ = piper.communicate(text.encode("utf-8"), timeout=90)
+                    if piper.returncode != 0:
+                        raise RuntimeError("Piper synthesis failed")
+                    player = subprocess.Popen(["aplay", "-q"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    self._process = player
+                    player.communicate(audio, timeout=90)
+                else:
+                    executable = "espeak-ng" if engine == "espeak-ng" else "espeak"
+                    self._process = subprocess.Popen(
+                        [executable, "-v", self._fallback_voice, "-s", str(round(170 * self._speed)), "-a", str(round(200 * self._volume)), text],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+                    self._process.wait(timeout=90)
+            except (OSError, subprocess.SubprocessError, RuntimeError):
+                self.stop()
+            finally:
+                self._process = None
 
 
 __all__ = ["VoiceOutput"]

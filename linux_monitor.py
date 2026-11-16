@@ -3,98 +3,125 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import time
 from typing import Any, Dict, List, Optional
 
 try:
     import psutil
-except Exception:  # pragma: no cover
+except ImportError:  # telemetry remains partially available without psutil
     psutil = None
 
 
 class LinuxMonitor:
-    def __init__(self) -> None:
-        self.psutil = psutil
-
     def collect(self) -> Dict[str, Any]:
-        data: Dict[str, Any] = {
-            "cpu_percent": self._cpu_percent(),
-            "ram": self._ram_usage(),
-            "disk": self._disk_usage(),
-            "temperature": self._temperature(),
-            "uptime": self._uptime(),
-            "processes": self._processes(),
-            "network": self._network_status(),
+        memory = self._memory()
+        disk = self._disk()
+        return {
+            "cpu_percent": self._cpu_percent(), "ram": memory, "disk": disk,
+            "temperature": self._temperature(), "uptime": self._uptime(),
+            "processes": self._processes(), "network": self._network_status(),
         }
-        return data
 
-    def _cpu_percent(self) -> float:
-        if self.psutil is not None:
-            return float(self.psutil.cpu_percent(interval=None))
-        return 0.0
+    def _cpu_percent(self) -> Optional[float]:
+        return float(psutil.cpu_percent(interval=0.1)) if psutil else None
 
-    def _ram_usage(self) -> Dict[str, float]:
-        if self.psutil is not None:
-            mem = self.psutil.virtual_memory()
-            return {
-                "used_gb": round(mem.used / (1024 ** 3), 2),
-                "total_gb": round(mem.total / (1024 ** 3), 2),
-                "percent": float(mem.percent),
-            }
-        return {"used_gb": 0.0, "total_gb": 0.0, "percent": 0.0}
+    def _memory(self) -> Dict[str, Optional[float]]:
+        if not psutil:
+            return {"used_gb": None, "total_gb": None, "percent": None}
+        mem = psutil.virtual_memory()
+        return {"used_gb": round(mem.used / 1024**3, 2), "total_gb": round(mem.total / 1024**3, 2), "percent": float(mem.percent)}
 
-    def _disk_usage(self) -> Dict[str, float]:
-        if self.psutil is not None:
-            disk = self.psutil.disk_usage('/')
-            return {
-                "used_gb": round(disk.used / (1024 ** 3), 2),
-                "total_gb": round(disk.total / (1024 ** 3), 2),
-                "percent": float(disk.percent),
-            }
-        return {"used_gb": 0.0, "total_gb": 0.0, "percent": 0.0}
+    def _disk(self) -> Dict[str, Optional[float]]:
+        if not psutil:
+            return {"used_gb": None, "total_gb": None, "percent": None}
+        disk = psutil.disk_usage(os.path.expanduser("~"))
+        return {"used_gb": round(disk.used / 1024**3, 2), "total_gb": round(disk.total / 1024**3, 2), "percent": float(disk.percent)}
 
     def _temperature(self) -> Optional[float]:
-        candidates = [
-            "/sys/class/thermal/thermal_zone0/temp",
-            "/sys/class/thermal/thermal_zone1/temp",
-            "/sys/class/thermal/thermal_zone2/temp",
-        ]
-        for path in candidates:
-            if os.path.exists(path):
-                try:
-                    with open(path, "r", encoding="utf-8") as handle:
-                        value = float(handle.read().strip()) / 1000.0
-                    return value
-                except Exception:
-                    pass
+        if psutil:
+            try:
+                for sensors in psutil.sensors_temperatures().values():
+                    for sensor in sensors:
+                        if sensor.current is not None:
+                            return float(sensor.current)
+            except (AttributeError, OSError):
+                pass
+        for path in ("/sys/class/thermal/thermal_zone0/temp", "/sys/class/thermal/thermal_zone1/temp"):
+            try:
+                with open(path, encoding="ascii") as handle:
+                    return float(handle.read().strip()) / 1000
+            except (OSError, ValueError):
+                continue
         return None
 
-    def _uptime(self) -> float:
+    @staticmethod
+    def _uptime() -> Optional[float]:
         try:
-            with open("/proc/uptime", "r", encoding="utf-8") as handle:
+            with open("/proc/uptime", encoding="ascii") as handle:
                 return float(handle.read().split()[0])
-        except Exception:
-            return 0.0
+        except (OSError, ValueError, IndexError):
+            return None
 
-    def _processes(self) -> List[str]:
+    @staticmethod
+    def _processes(limit: int = 8) -> List[str]:
+        if not psutil:
+            return []
+        processes = []
         try:
-            if self.psutil is not None:
-                return [proc.name() for proc in self.psutil.process_iter(attrs=['name'])][:20]
-        except Exception:
+            for proc in psutil.process_iter(attrs=["pid", "name", "cpu_percent", "memory_percent"]):
+                info = proc.info
+                processes.append((float(info.get("cpu_percent") or 0), f"{info['pid']} {info.get('name') or 'unknown'}"))
+        except (psutil.Error, OSError):
             pass
-        return []
+        return [name for _, name in sorted(processes, reverse=True)[:limit]]
 
-    def _network_status(self) -> Dict[str, str]:
-        status = {"interface": "unknown", "status": "unknown"}
+    @staticmethod
+    def _network_status() -> Dict[str, str]:
+        if not shutil.which("ip"):
+            return {"status": "unavailable", "interface": "unknown"}
         try:
-            if shutil.which("ip"):
-                result = subprocess.run(["ip", "route"], capture_output=True, text=True, check=False)
-                if result.stdout:
-                    status["interface"] = result.stdout.splitlines()[0].split()[0]
-                    status["status"] = "online"
-        except Exception:
-            pass
-        return status
+            result = subprocess.run(["ip", "-o", "route", "show", "default"], capture_output=True, text=True, timeout=2, check=False)
+            if result.returncode == 0 and result.stdout.strip():
+                fields = result.stdout.split()
+                interface = fields[fields.index("dev") + 1] if "dev" in fields else "unknown"
+                return {"status": "online", "interface": interface}
+            return {"status": "no default route", "interface": "unknown"}
+        except (OSError, subprocess.TimeoutExpired):
+            return {"status": "unknown", "interface": "unknown"}
+
+    def summary(self, section: str = "all") -> str:
+        data = self.collect()
+        section = section.lower()
+        if section == "processes":
+            return "Top processes (PID name):\n" + ("\n".join(data["processes"]) or "Unavailable (psutil not installed).")
+        if section == "network":
+            return f"Network: {data['network']['status']} (interface: {data['network']['interface']})"
+        if section == "disk":
+            return self._format_percent("Disk", data["disk"])
+        if section not in {"all", "cpu", "ram", "temperature", "uptime"}:
+            return "Usage: /system [all|cpu|ram|disk|temperature|network|processes|uptime]"
+        if section == "cpu":
+            return f"CPU: {self._fmt(data['cpu_percent'], '%')}"
+        if section == "ram":
+            return self._format_percent("RAM", data["ram"])
+        if section == "temperature":
+            return f"Temperature: {self._fmt(data['temperature'], ' °C')}"
+        if section == "uptime":
+            return f"Uptime: {self._fmt(data['uptime'] / 3600 if data['uptime'] is not None else None, ' hours')}"
+        return (f"CPU: {self._fmt(data['cpu_percent'], '%')} | " + self._format_percent("RAM", data["ram"]) + " | " + self._format_percent("Disk", data["disk"]) + "\n" +
+                f"Temperature: {self._fmt(data['temperature'], ' °C')} | Network: {data['network']['status']} ({data['network']['interface']}) | " +
+                f"Uptime: {self._fmt(data['uptime'] / 3600 if data['uptime'] is not None else None, ' h')}\n" +
+                "Top processes:\n" + ("\n".join(data["processes"]) or "Unavailable (psutil not installed)."))
+
+    @staticmethod
+    def _fmt(value: Optional[float], suffix: str) -> str:
+        return "unavailable" if value is None else f"{value:.1f}{suffix}"
+
+    @classmethod
+    def _format_percent(cls, name: str, values: Dict[str, Optional[float]]) -> str:
+        percent = cls._fmt(values.get("percent"), "%")
+        used, total = values.get("used_gb"), values.get("total_gb")
+        capacity = "unavailable" if used is None or total is None else f"{used:.1f}/{total:.1f} GB"
+        return f"{name}: {percent} ({capacity})"
 
 
 __all__ = ["LinuxMonitor"]
