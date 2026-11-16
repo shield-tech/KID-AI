@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import os
-import subprocess
+import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -20,26 +19,21 @@ class BenchmarkRunner:
         self.engine = engine
 
     async def run(self, model_name: str, prompt: str = "Benchmark K.I.D.") -> BenchmarkResult:
-        import time as _time
-        start = _time.perf_counter()
+        start = time.perf_counter()
         first_token = None
-        total_tokens = 0
         try:
-            async for token in self.engine.generate(model_name, prompt, stream=True):
+            async for _token in self.engine.generate(model_name, prompt):
                 if first_token is None:
-                    first_token = _time.perf_counter()
-                total_tokens += len(token.split())
-            end = _time.perf_counter()
-            ttft = (first_token - start) if first_token is not None else 0.0
-            duration = max(end - start, 0.0001)
-            return BenchmarkResult(
-                ttft_seconds=ttft,
-                total_seconds=duration,
-                tokens_per_second=(total_tokens / duration) if duration else 0.0,
-                success=True,
-            )
+                    first_token = time.perf_counter()
+            end = time.perf_counter()
+            duration = max(end - start, 1e-9)
+            stats = self.engine.last_stats
+            count = int(stats.get("eval_count", 0) or 0)
+            eval_duration = int(stats.get("eval_duration", 0) or 0) / 1e9
+            rate = count / eval_duration if eval_duration > 0 else 0.0
+            return BenchmarkResult((first_token - start) if first_token else 0.0, duration, rate)
         except Exception as exc:
-            return BenchmarkResult(ttft_seconds=0.0, total_seconds=0.0, tokens_per_second=0.0, success=False, error=str(exc))
+            return BenchmarkResult(0.0, time.perf_counter() - start, 0.0, False, str(exc))
 
 
 __all__ = ["BenchmarkRunner", "BenchmarkResult"]
