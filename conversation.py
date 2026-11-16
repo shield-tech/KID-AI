@@ -4,31 +4,37 @@ import asyncio
 import time
 from typing import Any, Optional
 
+from benchmark import BenchmarkRunner
 from knowledge import KnowledgeBase
+from linux_monitor import LinuxMonitor
 from memory import MemoryStore
 from ollama_engine import OllamaEngine, OllamaError
 from robotics import RoboticsController
 from speech_queue import SpeechQueue
 from task_manager import TaskManager
 from vision import VisionManager
+from voice_input import VoiceInput
 from voice_output import VoiceOutput
 
 
 class ConversationEngine:
-    COMMANDS = "/help, /model [name], /models, /voice [on|off|status|volume N|speed N|name NAME], /mute, /unmute, /stop, /clear, /memory [search|history], /remember topic | text, /forget ID, /edit ID topic | text, /index, /knowledge [index|search QUERY|status], /vision [status|models], /tasks [list|add TITLE | NOTES|done ID|remove ID|summary], /system [all|cpu|ram|disk|temperature|network|processes|uptime], /robotics, /status, /benchmark, /exit"
+    COMMANDS = "/help, /model [name], /models, /voice [on|off|status|volume N|speed N|name NAME], /listen, /mute, /unmute, /stop, /clear, /memory [search|history], /remember topic | text, /forget ID, /edit ID topic | text, /knowledge [index|search QUERY|status], /vision [status|models|analyze MODEL IMAGE [| PROMPT]], /tasks, /system [all|cpu|ram|swap|disk|temperature|network|processes|uptime|platform], /robotics, /status, /benchmark, /exit"
 
-    def __init__(self, config: Any, *, ollama: Any = None, memory: Any = None, knowledge: Any = None, voice_output: Any = None, speech_queue: Any = None, robotics: Any = None, tasks: Any = None, vision: Any = None) -> None:
+    def __init__(self, config: Any, *, ollama: Any = None, memory: Any = None, knowledge: Any = None, voice_output: Any = None, speech_queue: Any = None, robotics: Any = None, tasks: Any = None, vision: Any = None, voice_input: Any = None) -> None:
         self.config = config
         self.ollama = ollama or OllamaEngine(config)
         self.memory = memory if memory is not None else (MemoryStore(config.memory_db_path) if getattr(config, "memory_enabled", True) else None)
         self.knowledge = knowledge if knowledge is not None else (KnowledgeBase(config.knowledge_root) if getattr(config, "knowledge_enabled", True) else None)
-        self.monitor = __import__("linux_monitor").LinuxMonitor()
+        self.monitor = LinuxMonitor()
         self.robotics = robotics or RoboticsController(config)
         self.voice = voice_output or VoiceOutput(config)
         self.speech_queue = speech_queue or SpeechQueue()
         self.speech_queue.start(self.voice.speak)
         self.tasks = tasks or TaskManager(str(getattr(config, "task_db_path", ".kid/tasks.json")))
         self.vision = vision or VisionManager(self.ollama, config)
+        self.voice_input = voice_input or VoiceInput(config)
+        if getattr(config, "voice_input_enabled", False):
+            self.voice_input.initialize()
         self.model = getattr(config, "chat_model", "") or getattr(config, "default_model", "")
         self.voice_enabled = bool(getattr(config, "voice_output_enabled", True))
         self.muted = False
@@ -54,6 +60,11 @@ class ConversationEngine:
             return "Commands: " + self.COMMANDS
         if name == "/exit":
             return "EXIT"
+        if name == "/listen":
+            if not self.voice_input.is_available():
+                return "Offline voice input unavailable. Enable KID_VOICE_INPUT_ENABLED, install requirements-voice.txt, and configure a local Vosk model. No recording was started."
+            transcript = await asyncio.to_thread(self.voice_input.listen_once)
+            return f"Recognized: {transcript}\nSubmit the text above as a new prompt when ready." if transcript else "No speech recognized (or microphone unavailable). Manual text input remains available."
         if name == "/model":
             if not arg:
                 return f"Selected model: {self.model or 'none'} (use /models to discover or /model NAME to switch)."
@@ -172,17 +183,19 @@ class ConversationEngine:
         if name in {"/knowledge", "/docs"}:
             if not self.knowledge:
                 return "Knowledge base is disabled."
-            if not arg:
-                return f"Knowledge root: {self.knowledge.root}. Indexed files: {len(self.knowledge.indexed_files())}. Use /knowledge search QUERY or /knowledge index."
+            if not arg or arg == "status":
+                indexed = self.knowledge.indexed_files()
+                return f"Knowledge root: {self.knowledge.root}. Indexed files ({len(indexed)}):\n" + ("\n".join(f"  {path}" for path in indexed) or "  none; use /knowledge index after placing local documents there")
             if arg == "index":
-                return f"Indexed {len(self.knowledge.indexed_files())} file(s) in {self.knowledge.root}."
+                changed = self.knowledge.index_directory()
+                return f"Indexed or updated {len(changed)} document(s); {len(self.knowledge.indexed_files())} total indexed."
             if arg.startswith("search "):
                 query = arg[7:].strip()
                 hits = self.knowledge.search(query, limit=5)
                 if not hits:
                     return f"No indexed document matches {query!r}."
-                return "Knowledge hits:\n" + "\n".join(f"[{hit['path']}] {hit['excerpt']}" for hit in hits)
-            return f"Unsupported knowledge action: {arg}. Use /knowledge search QUERY or /knowledge index."
+                return "Knowledge hits:\n" + "\n".join(f"[{hit['path']}" + (f", page {hit['page']}" if hit.get("page") else "") + f"] {hit['excerpt']}" for hit in hits)
+            return "Usage: /knowledge [status|index|search QUERY]"
         if name == "/vision":
             if not getattr(self.config, "enable_vision", True):
                 return "Vision is disabled in configuration."
@@ -190,8 +203,16 @@ class ConversationEngine:
                 return await self.vision.describe_status()
             if arg == "models":
                 models = await self.vision.available_models()
-                return "Vision-capable local models:\n" + ("\n".join(f"  - {name}" for name in models) if models else "  none detected")
-            return "Usage: /vision [status|models]"
+                return "Verified vision-capable local models:\n" + ("\n".join(f"  - {model}" for model in models) if models else "  none verified")
+            if arg.startswith("analyze "):
+                request = arg[8:]
+                model_path, separator, prompt = request.partition("|")
+                fields = model_path.strip().split(maxsplit=1)
+                if len(fields) != 2:
+                    return "Usage: /vision analyze MODEL IMAGE_PATH | optional prompt"
+                model, image = fields
+                return await self.vision.analyze(model, image, prompt.strip() if separator else "Describe this image accurately.")
+            return "Usage: /vision [status|models|analyze MODEL IMAGE_PATH | prompt]"
         if name == "/tasks":
             if not arg:
                 summary = self.tasks.summary()
@@ -200,12 +221,12 @@ class ConversationEngine:
                 return f"Task summary: {summary['open']} open / {summary['completed']} completed / {summary['total']} total\n" + ("\n".join(rows) or "  (no active tasks)")
             if arg.startswith("add "):
                 payload = arg[4:].strip()
-                if "|" in payload:
-                    title, notes = (part.strip() for part in payload.split("|", 1))
-                else:
-                    title, notes = payload, ""
-                task = self.tasks.add_task(title, notes)
-                return f"Created task [{task.id}] {task.title}."
+                title, notes = (part.strip() for part in payload.split("|", 1)) if "|" in payload else (payload, "")
+                try:
+                    task = self.tasks.add_task(title, notes)
+                    return f"Created task [{task.id}] {task.title}."
+                except ValueError as exc:
+                    return str(exc)
             if arg.startswith("done "):
                 try:
                     task_id = int(arg[5:].strip())
@@ -229,9 +250,10 @@ class ConversationEngine:
             return self.monitor.summary(arg or "all")
         if name in {"/robotics", "/robot"}:
             state = self.robotics.status()
-            return (f"Robotics mode: {state['mode']} | physical connection verified: {'yes' if state['connected'] else 'no'} | "
-                    f"port: {state['port']} | authorized: {'yes' if state['authorized'] else 'no'} | E-stop latch: {state['emergency_stop_latched']}\n"
-                    "No movement interface is enabled without a device-specific validated protocol.")
+            return (f"Robotics mode: {state['mode']} | serial port open: {'yes' if state.get('port_open') else 'no'} | "
+                    f"device identity verified: {'yes' if state.get('device_verified') else 'no'} | motion enabled: {'yes' if state.get('motion_enabled') else 'no'} | "
+                    f"authorized: {'yes' if state['authorized'] else 'no'} | software E-stop latch: {state['emergency_stop_latched']}\n"
+                    f"Port: {state['port']} | {state['reason']} Physical E-stop is not verified by software.")
         if name == "/status":
             online = await self.ollama.health()
             try:
@@ -239,21 +261,22 @@ class ConversationEngine:
             except OllamaError:
                 models = []
             stats = self.monitor.collect()
-            ram = stats.get("ram", {})
-            docs = len(self.knowledge.indexed_files()) if self.knowledge else 0
             task_summary = self.tasks.summary()
+            robot = self.robotics.status()
+            vision = await self.vision.status()
             return (f"Intelligence: {'ONLINE' if online else 'OFFLINE'} ({self.ollama.base_url})\n"
                     f"Model: {self.model or 'none'} ({'installed' if self.model in models else 'not verified'})\n"
                     f"Memory: {'enabled' if self.memory else 'disabled'}; {len(self.memory.list_memories()) if self.memory else 0} approved item(s)\n"
-                    f"Knowledge: {'enabled' if self.knowledge else 'disabled'}; {docs} indexed document(s)\n"
-                    f"Voice: {'enabled' if self.voice_enabled else 'disabled'}, {'muted' if self.muted else 'unmuted'}, engine={self.voice.available_engine or 'unavailable'}\n"
-                    f"System: CPU {self.monitor._fmt(stats.get('cpu_percent'), '%')}, RAM {self.monitor._fmt(ram.get('percent'), '%')}, disk {self.monitor._fmt(stats.get('disk', {}).get('percent'), '%')}\n"
+                    f"Knowledge: {'enabled' if self.knowledge else 'disabled'}; {len(self.knowledge.indexed_files()) if self.knowledge else 0} indexed document(s)\n"
+                    f"Voice output: {'enabled' if self.voice_enabled else 'disabled'}; engine={self.voice.available_engine or 'unavailable'} | input: {'ready' if self.voice_input.is_available() else 'unavailable'} (push-to-talk only)\n"
+                    f"Vision: {'enabled' if vision['enabled'] else 'disabled'}; {len(vision['models'])} verified model(s)\n"
+                    f"System: CPU {self.monitor._fmt(stats.get('cpu_percent'), '%')} | RAM {self.monitor._fmt(stats.get('ram', {}).get('percent'), '%')} | disk {self.monitor._fmt(stats.get('disk', {}).get('percent'), '%')}\n"
                     f"Tasks: {task_summary['open']} open / {task_summary['completed']} completed\n"
-                    f"Robotics: {'connected' if self.robotics.status()['connected'] else 'disconnected'} ({self.robotics.status()['mode']} mode)")
+                    f"Robotics: {robot['mode']} | serial open={robot['port_open']} | device verified={robot['device_verified']} | motion enabled={robot['motion_enabled']}")
         if name == "/benchmark":
             if not self.model:
                 return "No model selected. Use /models and /model NAME."
-            result = await __import__("benchmark").BenchmarkRunner(self.ollama).run(self.model, "Reply with a short greeting.")
+            result = await BenchmarkRunner(self.ollama).run(self.model, "Reply with a short greeting.")
             if not result.success:
                 return f"Benchmark failed: {result.error}"
             return f"Benchmark {self.model}: TTFT {result.ttft_seconds:.2f}s; total {result.total_seconds:.2f}s; {result.tokens_per_second:.1f} tokens/s (server-reported when available)."
@@ -313,6 +336,7 @@ class ConversationEngine:
     def shutdown(self) -> None:
         self.speech_queue.close()
         self.voice.stop()
+        self.robotics.close()
 
 
 __all__ = ["ConversationEngine"]
