@@ -4,29 +4,31 @@ import asyncio
 import time
 from typing import Any, Optional
 
-from benchmark import BenchmarkRunner
 from knowledge import KnowledgeBase
-from linux_monitor import LinuxMonitor
 from memory import MemoryStore
 from ollama_engine import OllamaEngine, OllamaError
 from robotics import RoboticsController
 from speech_queue import SpeechQueue
+from task_manager import TaskManager
+from vision import VisionManager
 from voice_output import VoiceOutput
 
 
 class ConversationEngine:
-    COMMANDS = "/help, /model [name], /models, /voice [on|off|status|volume N|speed N|name NAME], /mute, /unmute, /stop, /clear, /memory [search|ID], /remember topic | text, /forget ID, /edit ID topic | text, /index, /system [all|cpu|ram|disk|temperature|network|processes|uptime], /robotics, /status, /benchmark, /exit"
+    COMMANDS = "/help, /model [name], /models, /voice [on|off|status|volume N|speed N|name NAME], /mute, /unmute, /stop, /clear, /memory [search|history], /remember topic | text, /forget ID, /edit ID topic | text, /index, /knowledge [index|search QUERY|status], /vision [status|models], /tasks [list|add TITLE | NOTES|done ID|remove ID|summary], /system [all|cpu|ram|disk|temperature|network|processes|uptime], /robotics, /status, /benchmark, /exit"
 
-    def __init__(self, config: Any, *, ollama: Any = None, memory: Any = None, knowledge: Any = None, voice_output: Any = None, speech_queue: Any = None, robotics: Any = None) -> None:
+    def __init__(self, config: Any, *, ollama: Any = None, memory: Any = None, knowledge: Any = None, voice_output: Any = None, speech_queue: Any = None, robotics: Any = None, tasks: Any = None, vision: Any = None) -> None:
         self.config = config
         self.ollama = ollama or OllamaEngine(config)
         self.memory = memory if memory is not None else (MemoryStore(config.memory_db_path) if getattr(config, "memory_enabled", True) else None)
         self.knowledge = knowledge if knowledge is not None else (KnowledgeBase(config.knowledge_root) if getattr(config, "knowledge_enabled", True) else None)
-        self.monitor = LinuxMonitor()
+        self.monitor = __import__("linux_monitor").LinuxMonitor()
         self.robotics = robotics or RoboticsController(config)
         self.voice = voice_output or VoiceOutput(config)
         self.speech_queue = speech_queue or SpeechQueue()
         self.speech_queue.start(self.voice.speak)
+        self.tasks = tasks or TaskManager(str(getattr(config, "task_db_path", ".kid/tasks.json")))
+        self.vision = vision or VisionManager(self.ollama, config)
         self.model = getattr(config, "chat_model", "") or getattr(config, "default_model", "")
         self.voice_enabled = bool(getattr(config, "voice_output_enabled", True))
         self.muted = False
@@ -120,14 +122,12 @@ class ConversationEngine:
             if arg.lower() == "history":
                 rows = self.memory.get_recent_history(20)
                 return "Recent conversation history:\n" + ("\n".join(f"{role}: {content}" for role, content in rows) or "  (empty)")
-            if arg.lower().startswith("edit "):
-                return "Use /edit ID topic | updated text to edit a saved memory."
-            search = arg
-            if search.startswith("search "):
-                search = search[7:].strip()
-            items = self.memory.list_memories(search)
-            heading = f"Saved memories matching {search!r}:" if search else "Saved memories (newest updated first):"
-            return heading + "\n" + ("\n".join(f"[{x['id']}] {x['topic']}: {x['content']} (updated {x['updated_at']})" for x in items) or "  (none; use /remember topic | text to save explicitly)")
+            if arg.lower().startswith("search "):
+                query = arg[7:].strip()
+                items = self.memory.list_memories(query)
+                return "Saved memories matching %r:\n" % query + ("\n".join(f"[{x['id']}] {x['topic']}: {x['content']}" for x in items) or "  (none)")
+            items = self.memory.list_memories()
+            return "Saved memories (newest first):\n" + ("\n".join(f"[{x['id']}] {x['topic']}: {x['content']}" for x in items) or "  (none; use /remember topic | text)")
         if name == "/remember":
             if not self.memory:
                 return "Memory is disabled."
@@ -169,6 +169,62 @@ class ConversationEngine:
                 return f"Indexed or updated {len(files)} document(s); {len(self.knowledge.indexed_files())} document(s) currently indexed."
             except (OSError, RuntimeError) as exc:
                 return f"Indexing failed: {exc}"
+        if name in {"/knowledge", "/docs"}:
+            if not self.knowledge:
+                return "Knowledge base is disabled."
+            if not arg:
+                return f"Knowledge root: {self.knowledge.root}. Indexed files: {len(self.knowledge.indexed_files())}. Use /knowledge search QUERY or /knowledge index."
+            if arg == "index":
+                return f"Indexed {len(self.knowledge.indexed_files())} file(s) in {self.knowledge.root}."
+            if arg.startswith("search "):
+                query = arg[7:].strip()
+                hits = self.knowledge.search(query, limit=5)
+                if not hits:
+                    return f"No indexed document matches {query!r}."
+                return "Knowledge hits:\n" + "\n".join(f"[{hit['path']}] {hit['excerpt']}" for hit in hits)
+            return f"Unsupported knowledge action: {arg}. Use /knowledge search QUERY or /knowledge index."
+        if name == "/vision":
+            if not getattr(self.config, "enable_vision", True):
+                return "Vision is disabled in configuration."
+            if not arg or arg == "status":
+                return await self.vision.describe_status()
+            if arg == "models":
+                models = await self.vision.available_models()
+                return "Vision-capable local models:\n" + ("\n".join(f"  - {name}" for name in models) if models else "  none detected")
+            return "Usage: /vision [status|models]"
+        if name == "/tasks":
+            if not arg:
+                summary = self.tasks.summary()
+                tasks = self.tasks.list_tasks(include_completed=False)
+                rows = [f"[{task.id}] {task.title} ({task.status})" for task in tasks]
+                return f"Task summary: {summary['open']} open / {summary['completed']} completed / {summary['total']} total\n" + ("\n".join(rows) or "  (no active tasks)")
+            if arg.startswith("add "):
+                payload = arg[4:].strip()
+                if "|" in payload:
+                    title, notes = (part.strip() for part in payload.split("|", 1))
+                else:
+                    title, notes = payload, ""
+                task = self.tasks.add_task(title, notes)
+                return f"Created task [{task.id}] {task.title}."
+            if arg.startswith("done "):
+                try:
+                    task_id = int(arg[5:].strip())
+                except ValueError:
+                    return "Usage: /tasks done ID"
+                return "Task marked complete." if self.tasks.complete_task(task_id) else f"Task {task_id} not found."
+            if arg.startswith("remove "):
+                try:
+                    task_id = int(arg[7:].strip())
+                except ValueError:
+                    return "Usage: /tasks remove ID"
+                return "Task removed." if self.tasks.remove_task(task_id) else f"Task {task_id} not found."
+            if arg == "summary":
+                summary = self.tasks.summary()
+                return f"Tasks: total={summary['total']} open={summary['open']} completed={summary['completed']}"
+            if arg == "list":
+                tasks = self.tasks.list_tasks()
+                return "Tasks:\n" + ("\n".join(f"[{task.id}] {task.title} [{task.status}]" for task in tasks) or "  (none)")
+            return "Usage: /tasks [list|add TITLE | NOTES|done ID|remove ID|summary]"
         if name in {"/system", "/linux"}:
             return self.monitor.summary(arg or "all")
         if name in {"/robotics", "/robot"}:
@@ -185,17 +241,19 @@ class ConversationEngine:
             stats = self.monitor.collect()
             ram = stats.get("ram", {})
             docs = len(self.knowledge.indexed_files()) if self.knowledge else 0
+            task_summary = self.tasks.summary()
             return (f"Intelligence: {'ONLINE' if online else 'OFFLINE'} ({self.ollama.base_url})\n"
                     f"Model: {self.model or 'none'} ({'installed' if self.model in models else 'not verified'})\n"
                     f"Memory: {'enabled' if self.memory else 'disabled'}; {len(self.memory.list_memories()) if self.memory else 0} approved item(s)\n"
                     f"Knowledge: {'enabled' if self.knowledge else 'disabled'}; {docs} indexed document(s)\n"
                     f"Voice: {'enabled' if self.voice_enabled else 'disabled'}, {'muted' if self.muted else 'unmuted'}, engine={self.voice.available_engine or 'unavailable'}\n"
                     f"System: CPU {self.monitor._fmt(stats.get('cpu_percent'), '%')}, RAM {self.monitor._fmt(ram.get('percent'), '%')}, disk {self.monitor._fmt(stats.get('disk', {}).get('percent'), '%')}\n"
+                    f"Tasks: {task_summary['open']} open / {task_summary['completed']} completed\n"
                     f"Robotics: {'connected' if self.robotics.status()['connected'] else 'disconnected'} ({self.robotics.status()['mode']} mode)")
         if name == "/benchmark":
             if not self.model:
                 return "No model selected. Use /models and /model NAME."
-            result = await BenchmarkRunner(self.ollama).run(self.model, "Reply with a short greeting.")
+            result = await __import__("benchmark").BenchmarkRunner(self.ollama).run(self.model, "Reply with a short greeting.")
             if not result.success:
                 return f"Benchmark failed: {result.error}"
             return f"Benchmark {self.model}: TTFT {result.ttft_seconds:.2f}s; total {result.total_seconds:.2f}s; {result.tokens_per_second:.1f} tokens/s (server-reported when available)."
@@ -236,7 +294,6 @@ class ConversationEngine:
             async for token in self.ollama.generate(self.model, "\n\n".join(prompt_parts), system_prompt=None):
                 answer.append(token)
                 speech_buffer += token
-                # Queue complete sentences to avoid choppy token-level speech.
                 while True:
                     cut = next((i for i, char in enumerate(speech_buffer) if char in ".!?" and (i + 1 == len(speech_buffer) or speech_buffer[i + 1].isspace())), -1)
                     if cut < 0:

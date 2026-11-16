@@ -1,40 +1,38 @@
 from __future__ import annotations
 
-import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 class VisionManager:
-    def __init__(self, ollama_engine: Any) -> None:
-        self.ollama = ollama_engine
+    """Safe, honest vision-capability detection for local Ollama models."""
 
-    async def supports_vision(self, model_name: str) -> bool:
-        info = await self.ollama.model_info(model_name)
-        if not info:
-            return False
-        capabilities = info.get("details", {}).get("capabilities", [])
-        return "vision" in capabilities or "visual" in str(info).lower()
+    def __init__(self, ollama: Any = None, config: Any = None) -> None:
+        self.ollama = ollama
+        self.config = config
 
-    async def analyze(self, model_name: str, image_path: str, prompt: str = "Describe this image.") -> str:
-        if not os.path.exists(image_path):
-            return "Image path does not exist."
-        if not await self.supports_vision(model_name):
-            return f"Model '{model_name}' does not advertise vision support."
-        payload = {
-            "model": model_name,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt,
-                    "images": [image_path],
-                }
-            ],
-            "stream": False,
-        }
+    async def available_models(self) -> List[str]:
+        if self.ollama is None:
+            return []
         try:
-            return "Vision analysis is not available because the Ollama client in this prototype does not expose the chat API for images."
+            models = await self.ollama.available_models()
         except Exception:
-            return "Vision request failed."
+            return []
+        keywords = ("vision", "llava", "bakllava", "qwen2.5-vl", "llama3.2-vision", "gemma3")
+        return [name for name in models if any(token in name.lower() for token in keywords)]
+
+    async def status(self) -> Dict[str, Any]:
+        models = await self.available_models()
+        return {
+            "enabled": bool(getattr(self.config, "enable_vision", True) if self.config else True),
+            "models": models,
+            "camera_connected": False,
+            "message": "No camera is confirmed connected; vision support is limited to locally installed Ollama vision-capable models.",
+        }
+
+    async def describe_status(self) -> str:
+        info = await self.status()
+        model_text = ", ".join(info["models"]) if info["models"] else "none detected"
+        return f"Vision: {'enabled' if info['enabled'] else 'disabled'} | models={model_text} | camera_connected={str(info['camera_connected']).lower()} | {info['message']}"
 
 
 __all__ = ["VisionManager"]

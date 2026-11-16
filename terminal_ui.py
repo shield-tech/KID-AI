@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import shutil
 import sys
 from datetime import datetime
 from typing import Any
@@ -42,7 +41,7 @@ class TerminalUI:
         voice_status = "READY" if voice_engine and self.engine.voice_enabled else "DISABLED" if not self.engine.voice_enabled else "UNAVAILABLE"
         docs = len(self.engine.knowledge.indexed_files()) if self.engine.knowledge else 0
         robot = self.engine.robotics.status()
-        system = self.engine.monitor.collect()
+        task_summary = self.engine.tasks.summary()
         print()
         print(self._paint("K.I.D", self.CYAN))
         print("KEY INTELLIGENCE DRIVER")
@@ -52,7 +51,8 @@ class TerminalUI:
         print(f"[{'ONLINE' if memory_ok else 'OFFLINE'}] Memory System — {'SQLite active' if memory_ok else 'disabled'}")
         print(f"[{voice_status}] Voice Output — {voice_engine or 'Piper/espeak not detected'}")
         print(f"[READY] Knowledge — {docs} indexed document(s); configured root: {getattr(self.engine.config, 'knowledge_root', 'disabled')}")
-        print(f"[INFO] System — CPU {self.engine.monitor._fmt(system.get('cpu_percent'), '%')}; robotics {robot['mode']} / {'connected' if robot['connected'] else 'disconnected'}")
+        print(f"[INFO] Tasks — {task_summary['open']} open / {task_summary['completed']} complete")
+        print(f"[INFO] System — robotics {robot['mode']} / {'connected' if robot['connected'] else 'disconnected'}")
         print("Models are discovered dynamically; K.I.D never downloads models automatically.")
         print("Type /help for commands.")
         print()
