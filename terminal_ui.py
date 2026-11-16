@@ -7,7 +7,6 @@ from typing import Any
 
 
 class TerminalUI:
-    BLUE = "\033[94m"
     CYAN = "\033[96m"
     GREEN = "\033[92m"
     DIM = "\033[2m"
@@ -50,12 +49,28 @@ class TerminalUI:
         print(f"[{'ONLINE' if ollama_online and models else 'OFFLINE'}] Intelligence Engine — {model_status}")
         print(f"[{'ONLINE' if memory_ok else 'OFFLINE'}] Memory System — {'SQLite active' if memory_ok else 'disabled'}")
         print(f"[{voice_status}] Voice Output — {voice_engine or 'Piper/espeak not detected'}")
-        print(f"[READY] Knowledge — {docs} indexed document(s); configured root: {getattr(self.engine.config, 'knowledge_root', 'disabled')}")
+        print(f"[READY] Knowledge — {docs} indexed document(s); root: {getattr(self.engine.config, 'knowledge_root', 'disabled')}")
         print(f"[INFO] Tasks — {task_summary['open']} open / {task_summary['completed']} complete")
-        print(f"[INFO] System — robotics {robot['mode']} / {'connected' if robot['connected'] else 'disconnected'}")
-        print("Models are discovered dynamically; K.I.D never downloads models automatically.")
-        print("Type /help for commands.")
+        print(f"[INFO] Robotics — {robot['mode']} mode; device verified: {'yes' if robot['device_verified'] else 'no'}; motion enabled: no")
+        print("Models and voice assets are never downloaded automatically. Type /help for commands.")
         print()
+
+    async def _respond(self, prompt: str) -> None:
+        timestamp = datetime.now().astimezone().strftime("%H:%M:%S")
+        print(self._paint(f"[{timestamp}] K.I.D: ", self.CYAN), end="", flush=True)
+        try:
+            async for token in self.engine.stream_response(prompt):
+                print(token, end="", flush=True)
+            stats = getattr(self.engine.ollama, "last_stats", {})
+            duration = getattr(self.engine, "last_response_seconds", 0.0)
+            count = stats.get("eval_count")
+            rate = count / duration if count and duration > 0 else None
+            detail = f"{duration:.2f}s" + (f", {rate:.1f} tok/s" if rate else "")
+            print(self._paint(f"\n({detail})", self.DIM))
+        except asyncio.CancelledError:
+            print("\n[Generation stopped]")
+        except Exception as exc:
+            print(f"\n[Error] {exc}")
 
     async def run(self) -> None:
         await self.print_banner()
@@ -73,23 +88,17 @@ class TerminalUI:
                     if response == "EXIT":
                         print("K.I.D offline.")
                         break
-                    print(response)
+                    if prompt.split(maxsplit=1)[0].lower() == "/listen" and response.startswith("Recognized: "):
+                        transcript = response[len("Recognized: "):].splitlines()[0].strip()
+                        if transcript:
+                            print(f"Voice input: {transcript}")
+                            await self._respond(transcript)
+                        else:
+                            print("No speech was recognized. You can continue by typing.")
+                    else:
+                        print(response)
                     continue
-                started = datetime.now().astimezone().strftime("%H:%M:%S")
-                print(self._paint(f"[{started}] K.I.D: ", self.CYAN), end="", flush=True)
-                try:
-                    async for token in self.engine.stream_response(prompt):
-                        print(token, end="", flush=True)
-                    stats = getattr(self.engine.ollama, "last_stats", {})
-                    duration = getattr(self.engine, "last_response_seconds", 0.0)
-                    count = stats.get("eval_count")
-                    rate = count / duration if count and duration > 0 else None
-                    detail = f"{duration:.2f}s" + (f", {rate:.1f} tok/s" if rate else "")
-                    print(self._paint(f"\n({detail})", self.DIM))
-                except asyncio.CancelledError:
-                    print("\n[Generation stopped]")
-                except Exception as exc:
-                    print(f"\n[Error] {exc}")
+                await self._respond(prompt)
         finally:
             self.engine.shutdown()
 

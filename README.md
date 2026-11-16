@@ -10,14 +10,14 @@ Python 3.11+ is recommended. Run `./install.sh`, optionally copy `.env.example` 
 
 Piper is preferred. Install Piper using a trusted local package/source, then place the voice `.onnx` and matching `.onnx.json` in `voices/` (or configure `KID_PIPER_VOICE_DIR`). K.I.D will not fetch large voice files. Piper playback uses `paplay` for configured volume when available, otherwise `aplay`; install `espeak-ng` as fallback. Adjust with `/voice volume 0..1`, `/voice speed 0.5..2`, `/voice name NAME`, `/mute`, and `/unmute`.
 
-For offline input, install the optional Vosk and sounddevice dependencies, download a Vosk model yourself into `models/vosk` or set `VOSK_MODEL_DIR`, and explicitly activate push-to-talk. The application does not continuously record audio. Manual text input remains available.
+For offline input, install the optional dependencies with `.venv/bin/pip install -r requirements-voice.txt`, then download a Vosk model yourself into `models/vosk` or set `VOSK_MODEL_DIR`. Enable `KID_VOICE_INPUT_ENABLED=true` in `.env`, then run `/listen` to explicitly activate a one-shot microphone capture. No microphone is opened at startup or kept recording; recognized text is submitted to the assistant. Manual text input remains available.
 
 ## Commands
 
 - `/help`, `/status`, `/models`, `/model [NAME]`, `/benchmark`
-- `/voice [on|off|status|volume N|speed N|name NAME]`, `/mute`, `/unmute`, `/stop`
+- `/voice [on|off|status|volume N|speed N|name NAME]`, `/listen`, `/mute`, `/unmute`, `/stop`
 - `/memory [search QUERY|history]`, `/remember topic | text`, `/edit ID topic | text`, `/forget ID`, `/clear`
-- `/knowledge [status|index|search QUERY]`, `/vision [status|models]`
+- `/knowledge [status|index|search QUERY]`, `/vision [status|models|analyze MODEL IMAGE_PATH | prompt]`
 - `/tasks [list|add TITLE | NOTES|done ID|remove ID|summary]`
 - `/system [all|cpu|ram|swap|disk|temperature|network|processes|uptime|platform]`, `/robotics`, `/exit`
 

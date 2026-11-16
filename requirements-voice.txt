@@ -1,4 +1,3 @@
-# Optional offline voice input dependencies.
-# Install only if using Vosk microphone push-to-talk.
+# Optional local voice-input dependencies. Install only if enabling Vosk input:
 vosk>=0.3.45
-sounddevice>=0.4.6
+sounddevice>=0.4.7
